@@ -1,241 +1,193 @@
 from pymongo.mongo_client import MongoClient
-from bson.objectid import ObjectId  # Importar para converter IDs
-from cryptography.fernet import Fernet
-import hashlib
-import base64
-from cryptography.fernet import InvalidToken
+from bson.objectid import ObjectId
+from cryptography.fernet import Fernet, InvalidToken
+import tkinter as tk
+from tkinter import messagebox, simpledialog
 from datetime import datetime, timedelta
 import json
+import re  # Importando módulo para expressões regulares
 
-#pegando URI do mongo
-uri = "mongodb+srv://Kenzo:123@brunao.u01owig.mongodb.net/?retryWrites=true&w=majority&appName=Brunao" 
-cliente = MongoClient(uri)
+# Conexão com MongoDB
+uri = "mongodb+srv://Kenzo:123@brunao.u01owig.mongodb.net/?retryWrites=true&w=majority&appName=Brunao"
+cliente = MongoClient(uri)  # Cria uma instância do cliente MongoDB
+meu_banco = cliente['Projeto4BIM']  # Acessa o banco de dados 'Projeto4BIM'
+colecao = meu_banco['Registro Medico']  # Acessa a coleção 'Registro Medico'
 
+# Carregar chave de criptografia
 with open("chave.key", "rb") as chave_arquivo:
-    chave = chave_arquivo.read()
-fernet = Fernet(chave)
+    chave = chave_arquivo.read()  # Lê a chave de criptografia do arquivo
+fernet = Fernet(chave)  # Inicializa o objeto Fernet com a chave lida
 
-def verificar_chave(conteudo_esperado):
-    chave_esperada_hash = conteudo_esperado  # Substitua pelo hash da chave original gerada uma vez.
-    try:
-        with open("chave.key", "rb") as chave_arquivo:
-            chave = chave_arquivo.read()
-            return chave
-    except FileNotFoundError:
-        print("Arquivo de chave não encontrado.")
-        return False
-
+# Funções de criptografia e descriptografia
 def criptografar_conteudo(conteudo):
-    resultado = fernet.encrypt(conteudo.encode()) 
-    return resultado  # Converte o texto criptografado em string para salvar no MongoDB
+    return fernet.encrypt(conteudo.encode())  # Retorna o conteúdo criptografado
 
 def descriptografar_conteudo(conteudo):
-    resultado = fernet.decrypt(conteudo).decode()
-    return resultado
+    return fernet.decrypt(conteudo).decode()  # Retorna o conteúdo descriptografado
 
-def gerar_chave_temporaria(tempo_validade_minutos):
-    chave_temporaria = Fernet.generate_key()
-    data_expiracao = datetime.now() + timedelta(minutes=tempo_validade_minutos)
-    return chave_temporaria, data_expiracao
+# Funções de validação de campos
+def validar_campos_obrigatorios(*args):
+    for campo in args:
+        if not campo.strip():  # Verifica se algum campo está vazio
+            return False
+    return True  # Retorna True se todos os campos estão preenchidos
 
-def compartilhar_registro_temporario(colecao, id_paciente, tempo_validade_minutos):
-    chave_temporaria, data_expiracao = gerar_chave_temporaria(tempo_validade_minutos)
-    fernet_temporario = Fernet(chave_temporaria)
+# Função para validar se o nome contém letras
+def validar_nome(nome):
+    return re.search(r'[a-zA-Z]', nome) is not None  # Verifica se há pelo menos uma letra no nome
+
+# Função para cadastrar paciente
+def cadastrar_paciente():
+    # Coleta informações do paciente
+    nome_paciente = simpledialog.askstring("Cadastro de Paciente", "Nome completo do paciente:")
+    historico_medico = simpledialog.askstring("Cadastro de Paciente", "Histórico médico:")
+    tratamento = simpledialog.askstring("Cadastro de Paciente", "Tratamento:")
     
-    # Buscar o registro do paciente
-    paciente = colecao.find_one({"_id": ObjectId(id_paciente)})
-    if paciente:
-        registro_criptografado_nome = fernet.decrypt(paciente['nome']).decode()
-        registro_criptografado_historico = fernet.decrypt(paciente['Historico medico']).decode()
-        registro_criptografado_tratamento = fernet.decrypt(paciente['tratamento']).decode()
+    if not validar_campos_obrigatorios(nome_paciente, historico_medico, tratamento):
+        messagebox.showwarning("Atenção", "Todos os campos são obrigatórios!")  # Alerta se campos obrigatórios não forem preenchidos
+        return
 
-        
-        # Criptografar com a chave temporária
-        registro_temporario_nome = fernet_temporario.encrypt(registro_criptografado_nome.encode())
-        registro_temporario_historico = fernet_temporario.encrypt(registro_criptografado_historico.encode())
-        registro_temporario_tratamento = fernet_temporario.encrypt(registro_criptografado_tratamento.encode())
-        
-        # Salvar os dados de compartilhamento em um arquivo JSON
-        dados_compartilhamento = {
-            "chave": chave_temporaria.decode(),
-            "expira_em": data_expiracao.isoformat(),
-            "registro_nome": registro_temporario_nome.decode(),
-            "registro_historico": registro_temporario_historico.decode(),
-            "registro_tratamento": registro_temporario_tratamento.decode()
-        }
-        
-        with open("compartilhamento_temporario.json", "w") as arquivo:
-            json.dump(dados_compartilhamento, arquivo)
-        
-        print("Registro compartilhado com sucesso!")
-    else:
-        print("Paciente não encontrado.")
+    if not validar_nome(nome_paciente):
+        messagebox.showwarning("Atenção", "O nome deve conter pelo menos uma letra!")  # Alerta se o nome não contiver letras
+        return
+
+    # Criptografa as informações do paciente
+    nome_criptografado = criptografar_conteudo(nome_paciente)
+    historico_criptografado = criptografar_conteudo(historico_medico)
+    tratamento_criptografado = criptografar_conteudo(tratamento)
+
+    # Cria o dicionário do paciente
+    paciente = {
+        'nome': nome_criptografado,
+        'Historico medico': historico_criptografado,
+        'tratamento': tratamento_criptografado
+    }
+    colecao.insert_one(paciente)  # Insere o dicionário do paciente na coleção
+    messagebox.showinfo("Sucesso", "Paciente cadastrado com sucesso!")  # Mensagem de sucesso
+
+# Função para consultar pacientes
+def consulta():
+    senha = simpledialog.askstring("Autenticação", "Digite a sua senha para continuar:", show='*')
+    
+    if senha != chave.decode():  # Verifica se a senha digitada corresponde à chave
+        messagebox.showwarning("Acesso Negado", "Senha incorreta.")  # Alerta se a senha estiver incorreta
+        return
+
+    janela_consulta = tk.Toplevel()  # Cria uma nova janela para consulta
+    janela_consulta.title("Pacientes Registrados")
+
+    # Adiciona uma área de texto com barra de rolagem
+    scrollbar = tk.Scrollbar(janela_consulta)
+    texto_label = tk.Text(janela_consulta, wrap="word", width=50, height=20, yscrollcommand=scrollbar.set)
+    scrollbar.config(command=texto_label.yview)
+
+    # Preenche a área de texto com os registros
+    for paciente in colecao.find():  # Itera sobre todos os pacientes na coleção
+        # Descriptografa os dados do paciente
+        nome = descriptografar_conteudo(paciente['nome'])
+        historico = descriptografar_conteudo(paciente['Historico medico'])
+        tratamento = descriptografar_conteudo(paciente['tratamento'])
+        paciente_id = str(paciente['_id'])  # Obtém o ID do paciente
+
+        texto_paciente = f"Nome: {nome}\nHistórico Médico: {historico}\nTratamento: {tratamento}\nID: {paciente_id}\n{'-'*40}\n"
+        texto_label.insert("end", texto_paciente)  # Insere os dados na área de texto
+
+    texto_label.config(state="disabled")  # Desabilita a edição do texto
+    texto_label.pack(side="left", fill="both", expand=True)  # Adiciona o texto à janela
+    scrollbar.pack(side="right", fill="y")  # Adiciona a barra de rolagem
+
+    janela_consulta.transient(janela_principal)  # Mantém a janela de consulta sobre a janela principal
+    janela_consulta.grab_set()  # Concentra a entrada na janela de consulta
+    janela_principal.wait_window(janela_consulta)  # Aguarda o fechamento da janela de consulta
+
+# Funções de compartilhamento temporário
+def gerar_chave_temporaria(tempo_validade_minutos):
+    chave_temporaria = Fernet.generate_key()  # Gera uma nova chave temporária
+    data_expiracao = datetime.now() + timedelta(minutes=tempo_validade_minutos)  # Define a data de expiração
+    return chave_temporaria, data_expiracao  # Retorna a chave e a data de expiração
+
+def compartilhar_registro_temporario():
+    registro_compartilhado = simpledialog.askstring("Compartilhar Registro", "Digite o ID do registro a compartilhar:")
+    tempo = simpledialog.askinteger("Compartilhar Registro", "Tempo de validade (minutos) da chave temporária:")
+
+    if not validar_campos_obrigatorios(registro_compartilhado, str(tempo)):
+        messagebox.showwarning("Atenção", "Todos os campos são obrigatórios!")  # Alerta se campos obrigatórios não forem preenchidos
+        return
+
+    try:
+        object_id = ObjectId(registro_compartilhado)  # Converte o ID para ObjectId
+        paciente = colecao.find_one({"_id": object_id})  # Busca o paciente pelo ID
+
+        if paciente:
+            # Gera chave temporária e expiração
+            chave_temporaria, data_expiracao = gerar_chave_temporaria(tempo)
+            fernet_temporario = Fernet(chave_temporaria)  # Inicializa o Fernet com a chave temporária
+
+            # Criptografa os dados do paciente
+            nome_temp = fernet_temporario.encrypt(descriptografar_conteudo(paciente['nome']).encode())
+            historico_temp = fernet_temporario.encrypt(descriptografar_conteudo(paciente['Historico medico']).encode())
+            tratamento_temp = fernet_temporario.encrypt(descriptografar_conteudo(paciente['tratamento']).encode())
+
+            # Cria um dicionário com os dados compartilhados
+            dados_compartilhamento = {
+                "chave": chave_temporaria.decode(),
+                "expira_em": data_expiracao.isoformat(),
+                "registro_nome": nome_temp.decode(),
+                "registro_historico": historico_temp.decode(),
+                "registro_tratamento": tratamento_temp.decode()
+            }
+
+            # Salva os dados de compartilhamento em um arquivo JSON
+            with open("compartilhamento_temporario.json", "w") as arquivo:
+                json.dump(dados_compartilhamento, arquivo)
+
+            messagebox.showinfo("Sucesso", "Registro compartilhado com sucesso!")  # Mensagem de sucesso
+        else:
+            messagebox.showerror("Erro", "Paciente não encontrado.")  # Mensagem de erro se paciente não for encontrado
+    except Exception as e:
+        messagebox.showerror("Erro", f"Ocorreu um erro: {e}")  # Mensagem de erro para exceções
 
 def acessar_registro_compartilhado():
     try:
         with open("compartilhamento_temporario.json", "r") as arquivo:
-            dados = json.load(arquivo)
-        
-        chave_temporaria = dados["chave"].encode()
-        data_expiracao = datetime.fromisoformat(dados["expira_em"])
+            dados = json.load(arquivo)  # Carrega os dados do compartilhamento
 
-        if datetime.now() > data_expiracao:
-            print("A chave temporária expirou e o acesso foi negado.")
-            return None
+        chave_temporaria = dados["chave"].encode()  # Codifica a chave temporária
+        data_expiracao = datetime.fromisoformat(dados["expira_em"])  # Converte a data de expiração
 
-        fernet_temporario = Fernet(chave_temporaria)
-        registro_descriptografado_nome = fernet_temporario.decrypt(dados["registro_nome"].encode())
-        registro_descriptografado_historico = fernet_temporario.decrypt(dados["registro_historico"].encode())
-        registro_descriptografado_tratamento = fernet_temporario.decrypt(dados["registro_tratamento"].encode())
-        print("Registro NOME descriptografado:", registro_descriptografado_nome.decode())
-        print("Registro HISTORICO MEDICO descriptografado:", registro_descriptografado_historico.decode())
-        print("Registro TRATAMENTO descriptografado:", registro_descriptografado_tratamento.decode())
-        return registro_descriptografado_nome + registro_descriptografado_historico + registro_descriptografado_tratamento
-    except (FileNotFoundError, InvalidToken):
-        print("Erro ao acessar o registro compartilhado ou chave inválida.")
-        return None
+        if datetime.now() > data_expiracao:  # Verifica se a chave expirou
+            messagebox.showerror("Erro", "A chave temporária expirou.")  # Mensagem de erro
+            return
 
+        fernet_temporario = Fernet(chave_temporaria)  # Inicializa o Fernet com a chave temporária
 
+        # Descriptografa os dados
+        nome = fernet_temporario.decrypt(dados["registro_nome"].encode()).decode()
+        historico = fernet_temporario.decrypt(dados["registro_historico"].encode()).decode()
+        tratamento = fernet_temporario.decrypt(dados["registro_tratamento"].encode()).decode()
 
+        # Exibe os dados
+        messagebox.showinfo("Registro Compartilhado", f"Nome: {nome}\nHistórico Médico: {historico}\nTratamento: {tratamento}")
+    except InvalidToken:
+        messagebox.showerror("Erro", "Chave inválida ou dados corrompidos.")  # Mensagem de erro para chave inválida
+    except Exception as e:
+        messagebox.showerror("Erro", f"Ocorreu um erro: {e}")  # Mensagem de erro para exceções
 
-def verificar_digito(info): #verificar se a informacao enviada tem numeros, retorna 1 e 0
-    
-    if info.isdigit(): 
-        return 1 
-    else:
-        return 0 
-    
-def verificar_conteudo(conteudo_buscado,conteudo_local): #verifica se o conteudo ja existe no banco de dados, retorna 1 e 0
-    if colecao.find_one({conteudo_buscado : conteudo_local}):
-        return 1
-    else:
-        return 0
+# Configuração da interface gráfica
+janela_principal = tk.Tk()
+janela_principal.title("Gerenciamento de Registros Médicos")
 
+# Botões da interface
+btn_cadastrar = tk.Button(janela_principal, text="Cadastrar Paciente", command=cadastrar_paciente)
+btn_consultar = tk.Button(janela_principal, text="Consultar Pacientes", command=consulta)
+btn_compartilhar = tk.Button(janela_principal, text="Compartilhar Registro Temporário", command=compartilhar_registro_temporario)
+btn_acessar_compartilhado = tk.Button(janela_principal, text="Acessar Registro Compartilhado", command=acessar_registro_compartilhado)
 
-continuar = 0 #controlador do fluxo
-try:
-    while continuar != 1:
+# Adiciona os botões na janela
+btn_cadastrar.pack(pady=10)
+btn_consultar.pack(pady=10)
+btn_compartilhar.pack(pady=10)
+btn_acessar_compartilhado.pack(pady=10)
 
-        def cadastrar_paciente(colecao): 
-            nome_paciente = input('NOME COMPLETO DO paciente: ')
-            while verificar_digito(nome_paciente) == 1: #VERIFICAR DIGITACAO
-                print('Nao e possivel cadastrar um paciente com numeros!')
-            
-                nome_paciente = input('NOME COMPLETO DO paciente: ')
-            
-            nome_paciente = criptografar_conteudo(nome_paciente)
-            
-            historico_medico = input('Historico medico: ')  
-            while verificar_digito(historico_medico) == 1: #VERIFICAR DIGITACAO 
-                print('Nao e possivel cadastrar uma Historico medico com apenas numeros!')
-                historico_medico = input('Historico medico: ')
-
-            historico_medico = criptografar_conteudo(historico_medico)
-            
-            tratamento = input('tratamento: ')
-            while verificar_digito(tratamento) == 1: #VERIFICAR DIGITACAO
-                print('Nao e possivel cadastrar um tratamento com numeros')
-                tratamento = input('tratamento: ')
-            tratamento = criptografar_conteudo(tratamento)
-            paciente = {'nome': nome_paciente, 'Historico medico': historico_medico, 'tratamento': tratamento} #DICIONARIO PARA ENVIO
-            colecao.insert_one(paciente)
-            print("paciente cadastrado com sucesso!")
-
-        
-        def consulta(colecao):
-            todos_pacientes = colecao.find()
-            try:
-                print('======== APENAS AUTORIZADOS ========')
-                conteudo_esperado = input('Digite a sua senha para continuar : \n')
-                if verificar_chave(conteudo_esperado):
-                    print('==== SENHA AUTORIZADA ====') 
-                    print('Pacientes Registrados:')
-                    for paciente in todos_pacientes:
-                        nome = descriptografar_conteudo(paciente['nome'])
-                        print(f"Nome: {nome}")
-                        print(f"ID: {paciente['_id']}")
-                        print('-' * 40)
-
-                    fluxo = input('Deseja visualizar um paciente específico? (s/n): ').lower()
-                    if fluxo == 's':
-                        paciente_especifico = input('Digite o ID do paciente: ')
-                        try:
-                            object_id = ObjectId(paciente_especifico)  # Converte para ObjectId
-                            busca = colecao.find_one({"_id": object_id})
-                            if busca:
-                                nome = descriptografar_conteudo(busca['nome'])
-                                historico_medico = descriptografar_conteudo(busca['Historico medico'])
-                                tratamento = descriptografar_conteudo(busca['tratamento'])
-                                print('-' * 40)
-                                print(f"Nome do paciente: {nome}")
-                                print(f"Histórico médico: {historico_medico}")
-                                print(f"Tratamento: {tratamento}")
-                            else:
-                                print("Paciente não encontrado.")
-                        except Exception as e:
-                            print(f"Erro ao buscar paciente específico: {e}")
-                else:
-                    print('CHAVE INCORRETA')
-                    exit()
-            except Exception as e:
-                print(f"Ocorreu um erro ao exibir os dados: {e}")
-
-        def consulta_compartilhada(colecao):
-            resp = input('1 - Compartilhar registro / 2 - Acessar registro compartilhado\n')
-            if resp == '1':
-                registro_compartilhado = input('Qual o ID do registro que deseja compartilhar? \n')
-                tempo = int(input('Digite o tempo de validade (minutos) da chave temporaria:'))
-                compartilhar_registro_temporario(colecao,registro_compartilhado,tempo)
-            elif resp == '2':
-                acessar_registro_compartilhado()
-
-
-
-                
-
-              
-        
-        
-
-       
-       
-    # Funções de mapeamento de opções
-
-        def opca_cadastro_paciente():
-            cadastrar_paciente(colecao)
-
-        def opcao_acessar_consulta():
-            consulta(colecao)
-
-        def opcao_consulta_compartilhada():
-            consulta_compartilhada(colecao)
-
-
-        # Main
-        try:
-            meu_banco = cliente['Projeto4BIM'] #pegando o banco
-            colecao = meu_banco['Registro Medico'] #pegando a colecao
-
-            print('====CONECTADO AO GERENCIAMENTO DE REGISTROS MEDICOS ==== \n O que pretende fazer?')
-            resp = input('1 - Cadastro de Paciente   / 2 - Acessar consulta  / 3 - Acessar consulta compartilhada \n')
-
-            switch = { #switch para controlar as opcoes 
-                '1': opca_cadastro_paciente,
-                '2': opcao_acessar_consulta,
-                '3': opcao_consulta_compartilhada,
-                #'5': opcao_remover,
-                #'6': opcao_update
-            }
-
-            funcao = switch.get(resp) #.get serve para pegar a opcao do SWITCH CASE
-            if funcao: # verifica se funcao nao eh null
-                funcao()
-            else:
-                print("Opção inválida.")
-        except Exception as e:
-            print(e)
-
-        continuar = int(input('Deseja encerrar o programa? : (1)SIM / (QUALQUER NUMERO INTEIRO)NAO \n'))
-
-except Exception as e:
-    print(f'Digito invalido{e}')
+# Executa a interface gráfica
+janela_principal.mainloop()
