@@ -2,28 +2,33 @@ from pymongo.mongo_client import MongoClient
 from bson.objectid import ObjectId  # Importar para converter IDs
 from cryptography.fernet import Fernet
 import hashlib
+import base64
+from cryptography.fernet import InvalidToken
 
 #pegando URI do mongo
 uri = "mongodb+srv://Kenzo:123@brunao.u01owig.mongodb.net/?retryWrites=true&w=majority&appName=Brunao" 
 cliente = MongoClient(uri)
 
-chave = Fernet.generate_key()
+with open("chave.key", "rb") as chave_arquivo:
+    chave = chave_arquivo.read()
 fernet = Fernet(chave)
+
 
 def criptografar_conteudo(conteudo):
     resultado = fernet.encrypt(conteudo.encode()) 
-    return resultado
+    return resultado  # Converte o texto criptografado em string para salvar no MongoDB
 
 
 def descriptografar_conteudo(conteudo):
     resultado = fernet.decrypt(conteudo).decode()
     return resultado
 
+
 def criptografia_senha(senha):
     sha_signature = hashlib.sha256(senha.encode()).hexdigest()
     return sha_signature
 
-#def transformar_bytes(conteudo):
+
 
 
 def comparar_senha(conteudo_buscado,conteudo_local):
@@ -71,23 +76,24 @@ try:
             
                 nome_paciente = input('NOME COMPLETO DO paciente: ')
             
-            nome_paciente = criptografar_conteudo(nome_paciente.encode())
+            nome_paciente = criptografar_conteudo(nome_paciente)
             
             historico_medico = input('Historico medico: ')  
             while verificar_digito(historico_medico) == 1: #VERIFICAR DIGITACAO 
                 print('Nao e possivel cadastrar uma Historico medico com apenas numeros!')
                 historico_medico = input('Historico medico: ')
 
-            historico_medico = criptografar_conteudo(historico_medico.encode())
+            historico_medico = criptografar_conteudo(historico_medico)
             
             tratamento = input('tratamento: ')
             while verificar_digito(tratamento) == 1: #VERIFICAR DIGITACAO
                 print('Nao e possivel cadastrar um tratamento com numeros')
                 tratamento = input('tratamento: ')
-            tratamento = criptografar_conteudo(tratamento.encode())
+            tratamento = criptografar_conteudo(tratamento)
             paciente = {'nome': nome_paciente, 'Historico medico': historico_medico, 'tratamento': tratamento} #DICIONARIO PARA ENVIO
             colecao.insert_one(paciente)
             print("paciente cadastrado com sucesso!")
+
         
         def consulta(colecao):
             senha_profissional = input('Para acessar os dados dos pacientes, digite a sua senha: ')
@@ -96,16 +102,36 @@ try:
             profissional = colecao.find_one({'SENHA DO PROFISSIONAL': senha_profissional_hash})
             if profissional:
                 print('Senha válida.')
+                #todos_pacientes = colecao.find()
+                dados_testes = input("teste : ")
+                conteudo_criptografado = criptografar_conteudo(dados_testes)
+                aux = {'teste': conteudo_criptografado}
+                resultado = colecao.insert_one(aux)
+                print("Conteúdo criptografado para teste:", conteudo_criptografado)
+                conteudo_retornado = colecao.find(aux)
+                if isinstance(conteudo_retornado, str):
+                    conteudo_retornado = conteudo_retornado.encode('utf-8')
+                    print(descriptografar_conteudo(conteudo_retornado))
+
+
+
                 todos_pacientes = colecao.find()
+                try:
+                    for paciente in todos_pacientes:
+                        nome = descriptografar_conteudo(paciente.get('nome', '').strip())
+                        historico_medico = descriptografar_conteudo(paciente.get('Historico medico', '').strip())
+                        tratamento = descriptografar_conteudo(paciente.get('tratamento', '').strip())
+                        print("Nome do paciente:", nome)
+                        print("Histórico médico:", historico_medico)
+                        print("Tratamento:", tratamento)
+                except Exception as e:
+                    print(f"Ocorreu um erro ao exibir os dados: {e}")
+                    # Para depuração, você pode adicionar mais detalhes, como:
+                    import traceback
+                    traceback.print_exc()  # Isso imprimirá o rastreamento completo da exceção.
 
-                print("Todos os pacientes:")
-                for paciente in todos_pacientes:
-                    nome = paciente.get('nome', 'Nome nao disponivel')
-                    historico_medico = paciente.get('Historico medico', 'Historico nao disponivel')
-                    tratamento = paciente.get('tratamento', 'Tratamento nao disponivel')
-                    print(nome)
-                    print(descriptografar_conteudo(b'gAAAAABnJTBonzjgdXuRfz_0CvtkuroIW14BpjYEb-EVS6IcyLBSsZoJtMDeqYyQVNyIjvNdlaV0c6JQJc0HYPsd0gQAH50yUQ=='))
 
+                
 
                 # Solicita o nome do paciente que deseja acessar
                 nome_paciente = input('Qual o nome do paciente que deseja acessar? \n ')
@@ -124,7 +150,7 @@ try:
                     print("Paciente nao encontrado.")
             else:
                 print("Senha incorreta. Acesso negado.")
-
+        
 
         """""
         def consultar(colecao):
