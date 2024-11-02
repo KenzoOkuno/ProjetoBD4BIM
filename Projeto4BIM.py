@@ -4,6 +4,8 @@ from cryptography.fernet import Fernet
 import hashlib
 import base64
 from cryptography.fernet import InvalidToken
+from datetime import datetime, timedelta
+import json
 
 #pegando URI do mongo
 uri = "mongodb+srv://Kenzo:123@brunao.u01owig.mongodb.net/?retryWrites=true&w=majority&appName=Brunao" 
@@ -13,29 +15,88 @@ with open("chave.key", "rb") as chave_arquivo:
     chave = chave_arquivo.read()
 fernet = Fernet(chave)
 
+def verificar_chave(conteudo_esperado):
+    chave_esperada_hash = conteudo_esperado  # Substitua pelo hash da chave original gerada uma vez.
+    try:
+        with open("chave.key", "rb") as chave_arquivo:
+            chave = chave_arquivo.read()
+            return chave
+    except FileNotFoundError:
+        print("Arquivo de chave não encontrado.")
+        return False
 
 def criptografar_conteudo(conteudo):
     resultado = fernet.encrypt(conteudo.encode()) 
     return resultado  # Converte o texto criptografado em string para salvar no MongoDB
 
-
 def descriptografar_conteudo(conteudo):
     resultado = fernet.decrypt(conteudo).decode()
     return resultado
 
+def gerar_chave_temporaria(tempo_validade_minutos):
+    chave_temporaria = Fernet.generate_key()
+    data_expiracao = datetime.now() + timedelta(minutes=tempo_validade_minutos)
+    return chave_temporaria, data_expiracao
 
-def criptografia_senha(senha):
-    sha_signature = hashlib.sha256(senha.encode()).hexdigest()
-    return sha_signature
+def compartilhar_registro_temporario(colecao, id_paciente, tempo_validade_minutos):
+    chave_temporaria, data_expiracao = gerar_chave_temporaria(tempo_validade_minutos)
+    fernet_temporario = Fernet(chave_temporaria)
+    
+    # Buscar o registro do paciente
+    paciente = colecao.find_one({"_id": ObjectId(id_paciente)})
+    if paciente:
+        registro_criptografado_nome = fernet.decrypt(paciente['nome']).decode()
+        registro_criptografado_historico = fernet.decrypt(paciente['Historico medico']).decode()
+        registro_criptografado_tratamento = fernet.decrypt(paciente['tratamento']).decode()
+
+        
+        # Criptografar com a chave temporária
+        registro_temporario_nome = fernet_temporario.encrypt(registro_criptografado_nome.encode())
+        registro_temporario_historico = fernet_temporario.encrypt(registro_criptografado_historico.encode())
+        registro_temporario_tratamento = fernet_temporario.encrypt(registro_criptografado_tratamento.encode())
+        
+        # Salvar os dados de compartilhamento em um arquivo JSON
+        dados_compartilhamento = {
+            "chave": chave_temporaria.decode(),
+            "expira_em": data_expiracao.isoformat(),
+            "registro_nome": registro_temporario_nome.decode(),
+            "registro_historico": registro_temporario_historico.decode(),
+            "registro_tratamento": registro_temporario_tratamento.decode()
+        }
+        
+        with open("compartilhamento_temporario.json", "w") as arquivo:
+            json.dump(dados_compartilhamento, arquivo)
+        
+        print("Registro compartilhado com sucesso!")
+    else:
+        print("Paciente não encontrado.")
+
+def acessar_registro_compartilhado():
+    try:
+        with open("compartilhamento_temporario.json", "r") as arquivo:
+            dados = json.load(arquivo)
+        
+        chave_temporaria = dados["chave"].encode()
+        data_expiracao = datetime.fromisoformat(dados["expira_em"])
+
+        if datetime.now() > data_expiracao:
+            print("A chave temporária expirou e o acesso foi negado.")
+            return None
+
+        fernet_temporario = Fernet(chave_temporaria)
+        registro_descriptografado_nome = fernet_temporario.decrypt(dados["registro_nome"].encode())
+        registro_descriptografado_historico = fernet_temporario.decrypt(dados["registro_historico"].encode())
+        registro_descriptografado_tratamento = fernet_temporario.decrypt(dados["registro_tratamento"].encode())
+        print("Registro NOME descriptografado:", registro_descriptografado_nome.decode())
+        print("Registro HISTORICO MEDICO descriptografado:", registro_descriptografado_historico.decode())
+        print("Registro TRATAMENTO descriptografado:", registro_descriptografado_tratamento.decode())
+        return registro_descriptografado_nome + registro_descriptografado_historico + registro_descriptografado_tratamento
+    except (FileNotFoundError, InvalidToken):
+        print("Erro ao acessar o registro compartilhado ou chave inválida.")
+        return None
 
 
 
-
-def comparar_senha(conteudo_buscado,conteudo_local):
-   if colecao.find_one({conteudo_buscado : conteudo_local }):
-       return 1
-   else:
-       return 0
 
 def verificar_digito(info): #verificar se a informacao enviada tem numeros, retorna 1 e 0
     
@@ -55,20 +116,6 @@ continuar = 0 #controlador do fluxo
 try:
     while continuar != 1:
 
-        def cadastrar_profissional(colecao):
-            nome_profissional = input('NOME DO PROFISSIONAL: ')
-            while verificar_digito(nome_profissional) == 1: #VD
-                print('Nao e possivel cadastrar um profissional com numeros')
-                nome_profissional = input('NOME DO PROFISSIONAL: ')
-            senha_profissional = input('SENHA DO PROFISSIONAL: ')
-            
-            nome_profissional = criptografar_conteudo(nome_profissional)       
-            senha_profissional = criptografia_senha(senha_profissional)
-            
-            profissional = {'nome DO PROFISSIONAL': nome_profissional, 'SENHA DO PROFISSIONAL': senha_profissional} #DE           
-            colecao.insert_one(profissional)
-            print("profissional cadastrado com sucesso!")
-       
         def cadastrar_paciente(colecao): 
             nome_paciente = input('NOME COMPLETO DO paciente: ')
             while verificar_digito(nome_paciente) == 1: #VERIFICAR DIGITACAO
@@ -96,131 +143,63 @@ try:
 
         
         def consulta(colecao):
-            senha_profissional = input('Para acessar os dados dos pacientes, digite a sua senha: ')
-            senha_profissional_hash = criptografia_senha(senha_profissional)
-            
-            profissional = colecao.find_one({'SENHA DO PROFISSIONAL': senha_profissional_hash})
-            if profissional:
-                print('Senha válida.')
-                #todos_pacientes = colecao.find()
-                dados_testes = input("teste : ")
-                conteudo_criptografado = criptografar_conteudo(dados_testes)
-                aux = {'teste': conteudo_criptografado}
-                resultado = colecao.insert_one(aux)
-                print("Conteúdo criptografado para teste:", conteudo_criptografado)
-                conteudo_retornado = colecao.find(aux)
-                if isinstance(conteudo_retornado, str):
-                    conteudo_retornado = conteudo_retornado.encode('utf-8')
-                    print(descriptografar_conteudo(conteudo_retornado))
-
-
-
-                todos_pacientes = colecao.find()
-                try:
+            todos_pacientes = colecao.find()
+            try:
+                print('======== APENAS AUTORIZADOS ========')
+                conteudo_esperado = input('Digite a sua senha para continuar : \n')
+                if verificar_chave(conteudo_esperado):
+                    print('==== SENHA AUTORIZADA ====') 
+                    print('Pacientes Registrados:')
                     for paciente in todos_pacientes:
-                        nome = descriptografar_conteudo(paciente.get('nome', '').strip())
-                        historico_medico = descriptografar_conteudo(paciente.get('Historico medico', '').strip())
-                        tratamento = descriptografar_conteudo(paciente.get('tratamento', '').strip())
-                        print("Nome do paciente:", nome)
-                        print("Histórico médico:", historico_medico)
-                        print("Tratamento:", tratamento)
-                except Exception as e:
-                    print(f"Ocorreu um erro ao exibir os dados: {e}")
-                    # Para depuração, você pode adicionar mais detalhes, como:
-                    import traceback
-                    traceback.print_exc()  # Isso imprimirá o rastreamento completo da exceção.
+                        nome = descriptografar_conteudo(paciente['nome'])
+                        print(f"Nome: {nome}")
+                        print(f"ID: {paciente['_id']}")
+                        print('-' * 40)
+
+                    fluxo = input('Deseja visualizar um paciente específico? (s/n): ').lower()
+                    if fluxo == 's':
+                        paciente_especifico = input('Digite o ID do paciente: ')
+                        try:
+                            object_id = ObjectId(paciente_especifico)  # Converte para ObjectId
+                            busca = colecao.find_one({"_id": object_id})
+                            if busca:
+                                nome = descriptografar_conteudo(busca['nome'])
+                                historico_medico = descriptografar_conteudo(busca['Historico medico'])
+                                tratamento = descriptografar_conteudo(busca['tratamento'])
+                                print('-' * 40)
+                                print(f"Nome do paciente: {nome}")
+                                print(f"Histórico médico: {historico_medico}")
+                                print(f"Tratamento: {tratamento}")
+                            else:
+                                print("Paciente não encontrado.")
+                        except Exception as e:
+                            print(f"Erro ao buscar paciente específico: {e}")
+                else:
+                    print('CHAVE INCORRETA')
+                    exit()
+            except Exception as e:
+                print(f"Ocorreu um erro ao exibir os dados: {e}")
+
+        def consulta_compartilhada(colecao):
+            resp = input('1 - Compartilhar registro / 2 - Acessar registro compartilhado\n')
+            if resp == '1':
+                registro_compartilhado = input('Qual o ID do registro que deseja compartilhar? \n')
+                tempo = int(input('Digite o tempo de validade (minutos) da chave temporaria:'))
+                compartilhar_registro_temporario(colecao,registro_compartilhado,tempo)
+            elif resp == '2':
+                acessar_registro_compartilhado()
+
 
 
                 
 
-                # Solicita o nome do paciente que deseja acessar
-                nome_paciente = input('Qual o nome do paciente que deseja acessar? \n ')
-
-                # Recupera todos os registros de paciente
-                # Variável para armazenar se o paciente foi encontrado
-                paciente_encontrado = False
-
-                    # Descriptografa o nome do paciente
-                    
-                    
-                    # Verifica se o nome do paciente corresponde
-                        
-                
-                if not paciente_encontrado:
-                    print("Paciente nao encontrado.")
-            else:
-                print("Senha incorreta. Acesso negado.")
+              
+        
         
 
-        """""
-        def consultar(colecao):
-            escolha = input('Qual consulta você deseja fazer? \n (1) paciente \n (2) PROFESSOR \n (3) profissional (4) TODOS OS REGISTROS \n')
-            
-            if escolha == '1':
-                nome_paciente_consulta = input('NOME COMPLETO DO paciente PARA CONSULTA: ')
-                paciente_consulta = {'nome': nome_paciente_consulta}
-                resultados = colecao.find(paciente_consulta)
-                for resultado in resultados:
-                    print(f"ID: {resultado['_id']}") #Pegando ID da busca
-                    print(f"Nome: {resultado.get('nome', 'N/A')}") #.GET = pegar valores do campo. SE ESTIVER VAZIO vai aparecer N/A!
-                    print(f"Matrícula: {resultado.get('Historico medico', 'N/A')}")
-                    print(f"tratamento: {resultado.get('tratamento', 'N/A')}")
-                    print("-" * 40)
-            
-            elif escolha == '2':
-                nome_professor_consulta = input('NOME COMPLETO DO PROFESSOR PARA CONSULTA: ')
-                professor_consulta = {'nome do professor': nome_professor_consulta}
-                resultados = colecao.find(professor_consulta)
-                for resultado in resultados:
-                    print(f"ID: {resultado['_id']}")
-                    print(f"Nome do Professor: {resultado.get('nome do professor', 'N/A')}")
-                    print(f"Departamento: {resultado.get('departamento do professor', 'N/A')}")
-                    print("-" * 40)
-            
-            elif escolha == '3':
-                nome_profissional_consulta = input('NOME DO PROFISSIONAL PARA CONSULTA: ')
-                profissional_consulta = {'nome DO PROFISSIONAL': nome_profissional_consulta}
-                resultados = colecao.find(profissional_consulta)
-                for resultado in resultados:
-                    print(f"ID: {resultado['_id']}")
-                    print(f"Nome DO PROFISSIONAL: {resultado.get('nome DO PROFISSIONAL', 'N/A')}")
-                    print(f"Código DO PROFISSIONAL: {resultado.get('SENHA DO PROFISSIONAL', 'N/A')}")
-                    print(f"Professor Responsável: {resultado.get('professor responsavel', 'N/A')}")
-                    print("-" * 40)
-            
-            elif escolha == '4':
-                todos_registros = colecao.find()
-                for registro in todos_registros:
-                    print(f"ID: {registro['_id']}")
-                    print(f"Nome: {registro.get('nome', 'N/A')}")
-                    print(f"Matrícula: {registro.get('Historico medico', 'N/A')}")
-                    print(f"tratamento: {registro.get('tratamento', 'N/A')}")
-                    print(f"Nome do Professor: {registro.get('nome do professor', 'N/A')}")
-                    print(f"Departamento: {registro.get('departamento do professor', 'N/A')}")
-                    print(f"Nome DO PROFISSIONAL: {registro.get('nome DO PROFISSIONAL', 'N/A')}")
-                    print(f"Código DO PROFISSIONAL: {registro.get('SENHA DO PROFISSIONAL', 'N/A')}")
-                    print(f"Professor Responsável: {registro.get('professor responsavel', 'N/A')}")
-                    print("-" * 40)
-            
-            else:
-                print("Consulta inválida.")
-                
-
-            id = input('Digite o ID do documento para remover (ex: 60b9b8f8e4b0c54c9e8d25b3): ')
-            try:
-                object_id = ObjectId(id) #transforma em objetoID
-                result = colecao.delete_one({'_id': object_id}) #deletando objeto
-                if result.deleted_count > 0: #se deletou..
-                    print("Documento removido com sucesso!")
-                else:
-                    print("Nenhum documento encontrado com o ID fornecido.")
-            except Exception as e:
-                print(f"Erro ao remover o documento: {e}")
-            """
+       
        
     # Funções de mapeamento de opções
-        def opcao_cadastro_profissional():
-            cadastrar_profissional(colecao)
 
         def opca_cadastro_paciente():
             cadastrar_paciente(colecao)
@@ -229,7 +208,7 @@ try:
             consulta(colecao)
 
         def opcao_consulta_compartilhada():
-            consultar(colecao)
+            consulta_compartilhada(colecao)
 
 
         # Main
@@ -238,13 +217,12 @@ try:
             colecao = meu_banco['Registro Medico'] #pegando a colecao
 
             print('====CONECTADO AO GERENCIAMENTO DE REGISTROS MEDICOS ==== \n O que pretende fazer?')
-            resp = input('1 - Cadastro de Profissional / 2 - Cadastro de Paciente   / 3 - Acessar consulta  / 4 - Acessar consulta compartilhada \n')
+            resp = input('1 - Cadastro de Paciente   / 2 - Acessar consulta  / 3 - Acessar consulta compartilhada \n')
 
-            switch = { #switch para controlar as opcoes
-                '1': opcao_cadastro_profissional,
-                '2': opca_cadastro_paciente,
-                '3': opcao_acessar_consulta,
-                '4': opcao_consulta_compartilhada,
+            switch = { #switch para controlar as opcoes 
+                '1': opca_cadastro_paciente,
+                '2': opcao_acessar_consulta,
+                '3': opcao_consulta_compartilhada,
                 #'5': opcao_remover,
                 #'6': opcao_update
             }
